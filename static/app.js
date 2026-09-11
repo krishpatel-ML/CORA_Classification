@@ -86,8 +86,23 @@ function initCoraExplorer() {
     });
   });
 
-  // Initial predict for Node #0
-  predictCoraNode(0);
+  // Wait for health check to confirm API is ready, then auto-load node 0
+  // This prevents the 502 alert that fires during Render cold start
+  waitForApiThenPredict(0);
+}
+
+async function waitForApiThenPredict(nodeId, attempts = 0) {
+  if (attempts > 5) return; // Give up silently after 5 tries — user can click manually
+  try {
+    const res = await fetch("/health");
+    if (res.ok) {
+      predictCoraNode(nodeId);
+    } else {
+      setTimeout(() => waitForApiThenPredict(nodeId, attempts + 1), 2000);
+    }
+  } catch {
+    setTimeout(() => waitForApiThenPredict(nodeId, attempts + 1), 2000);
+  }
 }
 
 async function predictCoraNode(nodeId) {
@@ -102,6 +117,20 @@ async function predictCoraNode(nodeId) {
 
   graphNodeCount.textContent = `Node #${nodeId} Citation Context`;
 
+  // Show loading state while waiting for API
+  if (emptyState && resultsContainer) {
+    emptyState.classList.add("hidden");
+    resultsContainer.classList.remove("hidden");
+    resultsContainer.innerHTML = `
+      <div style="
+        display:flex;align-items:center;gap:0.75rem;
+        padding:1.5rem;color:#94a3b8;font-size:0.9rem;
+      ">
+        <i class="fa-solid fa-spinner fa-spin" style="font-size:1.1rem;color:#6366f1"></i>
+        Classifying node #${nodeId}…
+      </div>`;
+  }
+
   try {
     const res = await fetch("/predict/cora_node", {
       method: "POST",
@@ -113,6 +142,18 @@ async function predictCoraNode(nodeId) {
 
     const data = await res.json();
     const pred = data.predictions[0];
+
+    // Restore original inner structure if we clobbered it with loading/error HTML
+    if (!resultsContainer.querySelector("#pred-topic-title")) {
+      resultsContainer.innerHTML = `
+        <div id="pred-topic-title" style="font-size:1.4rem;font-weight:700;margin-bottom:0.5rem">
+          <i class="fa-solid fa-brain"></i>
+        </div>
+        <div id="pred-topic-name" style="font-size:1rem;margin-bottom:0.25rem"></div>
+        <div id="pred-confidence-pct" style="font-size:2rem;font-weight:800;margin-bottom:1rem"></div>
+        <div id="prob-bars-list"></div>
+        <pre id="raw-logits-code" style="font-size:0.75rem;margin-top:1rem;overflow-x:auto"></pre>`;
+    }
 
     emptyState.classList.add("hidden");
     resultsContainer.classList.remove("hidden");
@@ -177,7 +218,34 @@ async function predictCoraNode(nodeId) {
 
   } catch (err) {
     console.error("Prediction failed:", err);
-    alert(`Failed to get GCN prediction for node ${nodeId}: ${err.message}`);
+    // Show inline error instead of blocking alert
+    if (emptyState && resultsContainer) {
+      emptyState.classList.add("hidden");
+      resultsContainer.classList.remove("hidden");
+      resultsContainer.innerHTML = `
+        <div style="
+          background: rgba(244,63,94,0.1);
+          border: 1px solid rgba(244,63,94,0.3);
+          border-radius: 12px;
+          padding: 1.25rem 1.5rem;
+          color: #f43f5e;
+          font-size: 0.9rem;
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+        ">
+          <i class="fa-solid fa-circle-exclamation" style="font-size:1.1rem;flex-shrink:0"></i>
+          <div>
+            <strong>Prediction failed for node #${nodeId}</strong><br>
+            <span style="color:#fca5a5;font-size:0.82rem">${err.message} — The API may be warming up. Try again in a moment.</span>
+          </div>
+          <button onclick="predictCoraNode(${nodeId})" style="
+            margin-left:auto;background:rgba(244,63,94,0.15);border:1px solid rgba(244,63,94,0.4);
+            color:#f43f5e;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.82rem;
+            white-space:nowrap;
+          ">Retry</button>
+        </div>`;
+    }
   }
 }
 
@@ -345,7 +413,26 @@ function initCustomPredictor() {
       });
 
     } catch (err) {
-      alert(`Custom prediction error: ${err.message}`);
+      resultsWrapper.classList.remove("hidden");
+      resultsGrid.innerHTML = `
+        <div style="
+          grid-column: 1/-1;
+          background: rgba(244,63,94,0.1);
+          border: 1px solid rgba(244,63,94,0.3);
+          border-radius: 12px;
+          padding: 1.25rem 1.5rem;
+          color: #f43f5e;
+          font-size: 0.9rem;
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+        ">
+          <i class="fa-solid fa-circle-exclamation" style="font-size:1.1rem"></i>
+          <div>
+            <strong>Custom prediction failed</strong><br>
+            <span style="color:#fca5a5;font-size:0.82rem">${err.message}</span>
+          </div>
+        </div>`;
     }
   });
 }
@@ -403,7 +490,13 @@ async function initModelInfo() {
 
     } catch (err) {
       benchMs.textContent = "Error";
-      alert("Benchmark failed.");
+      if (benchDetails) {
+        benchDetails.innerHTML = `
+          <p style="color:#f43f5e">
+            <i class="fa-solid fa-circle-exclamation"></i>
+            Benchmark failed: ${err.message}. The API may still be warming up — try again in a few seconds.
+          </p>`;
+      }
     } finally {
       btnBenchmark.disabled = false;
       btnBenchmark.innerHTML = '<i class="fa-solid fa-stopwatch"></i> Run Latency Benchmark';
